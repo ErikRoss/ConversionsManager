@@ -7,7 +7,7 @@ from utils import logger
 logs = logger.get_logger(__name__)
 
 
-def send_conversion_to_fb(conversion_params):
+def send_conversion_to_fb(conversion_params: dict):
     logs.info("Sending conversion to FB.")
     
     conversion_url = "https://www.facebook.com/tr/"
@@ -29,3 +29,40 @@ def send_conversion_to_fb(conversion_params):
         logs.error(f"Conversion not sent. Response: {response.text}")
         
         return {"success": False, "url": full_conversion_url}
+    
+def send_conversion_to_google(conversion_params: dict):
+    logs.info("Sending conversion to Google.")
+    
+    conversion_url = "http://164.90.189.159/selenium/"
+    
+    response = requests.post(conversion_url, json=conversion_params)
+    if response.status_code == 200:
+        logs.info("Conversion sent")
+        
+        return {"success": True, "url": conversion_url}
+    else:
+        logs.error(f"Conversion not sent. Response: {response.text}")
+        
+        return {"success": False, "url": conversion_url}
+
+def send_conversion_to_tiktok(conversion_params: dict):
+    logs.info("Sending conversion to TikTok.")
+    
+    conversion_url = "http://example.com/tiktok/"
+    
+    args = {
+        "params": {"limit": 10, "page": 1},
+        "timeout": 1,
+        "url": "https://example.com/",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/"
+    }
+    
+    response = requests.post(conversion_url, json=args)
+    if response.status_code == 200:
+        logs.info("Conversion sent")
+        
+        return {"success": True, "url": conversion_url}
+    else:
+        logs.error(f"Conversion not sent. Response: {response.text}")
+        
+        return {"success": False, "url": conversion_url}

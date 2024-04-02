@@ -1,12 +1,11 @@
-from typing import Optional
-
+import traceback
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from config import SQLALCHEMY_DATABASE_URI
+from dataclass import ClickData, ConversionData
 from models import Click, Conversion
 from utils import collector, sender, logger
 
@@ -35,27 +34,6 @@ async def not_allowed_method():
         status_code=405
         )
 
-
-class ClickData(BaseModel):
-    click_id: str
-    domain: str
-    rma: str
-    ulb: int
-    initiator: Optional[str] = None
-    click_source: Optional[str] = None
-    xcn: Optional[int] = None
-    fbclid: Optional[str] = None
-    gclid: Optional[str] = None
-    ttclid: Optional[str] = None
-    key: Optional[str] = None
-
-
-class ConversionData(BaseModel):
-    key: str
-    event: str
-    appclid: Optional[int] = None
-
-
 def save_click_to_db(click_data: dict):
     '''
     Save click data to database.
@@ -80,6 +58,72 @@ def save_conversion_to_db(conversion_data: dict):
     db.refresh(conversion)
     db.close()
     logs.info(f"Conversion saved with ID [{conversion.id}]")
+
+
+def handle_fb_conversion(conversion_data: ConversionData, click: Click):
+    '''
+    Handle conversion data for Facebook.
+    '''
+    try:
+        if conversion_data.event == "install":
+            events = ["install", "AddToCart", "ViewContent"]
+        elif conversion_data.event == "reg":
+            events = ["reg", "AddPaymentInfo", "InitiateCheckout"]
+        elif conversion_data.event == "dep":
+            events = ["dep", "Subscribe", "StartTrial"]
+        else:
+            events = [conversion_data.event]
+        
+        for event in events:
+            logs.info(f"Sending conversion event {event} to Facebook")
+            conversion_data.event = event
+            conversion_params = collector.collect_fb_conversion_parameters(
+                conversion_data, click
+            )
+            if not conversion_params:
+                logs.error(f"Conversion event {event} not found")
+                return JSONResponse(
+                    content={
+                        "success": False, 
+                        "msg": f"Conversion event {event} not found"
+                        }, 
+                    status_code=404
+                    )
+            
+            conversion_result = sender.send_conversion_to_fb(conversion_params)
+            if not conversion_result['success']:
+                return JSONResponse(
+                    content={
+                        "success": False, 
+                        "msg": f"Conversion event {event} not sent"
+                        }, 
+                    status_code=500
+                    )
+            
+            conversion_dict = collector.collect_conversion_fields(
+                conversion_data, click, conversion_result
+            )
+            if conversion_dict:
+                save_conversion_to_db(conversion_dict)
+                logs.info(f"Conversion event {event} sent and saved")
+        
+        logs.info(f"Conversion events {events} sent")
+        return JSONResponse(
+            content={
+                "success": True, 
+                "msg": f"Conversion events {events} sent"
+                },
+            status_code=200
+            )
+    except Exception:
+        logs.exception(f"Error occurred while sending conversion to Facebook. {traceback.format_exc()}")
+        return JSONResponse(
+            content={
+                "success": False, 
+                "msg": "Error occurred while sending conversion to Facebook"
+                }, 
+            status_code=500
+            )
 
 
 @app.post("/save_click")
@@ -117,17 +161,17 @@ async def get_clicks():
 
 
 @app.post("/send_conversion")
-async def send_conversion(conversion_data: ConversionData, request: Request):
+async def send_conversion(conversion_data: ConversionData):
     '''
     Generate conversion parameters from received data and send conversion to FB.
     '''
     logs.info(f"Received conversion data: {conversion_data}")
-    # conversion_dict = conversion_data.model_dump()
     
     db = SessionLocal()
-    click = db.query(Click).filter(Click.key == conversion_data.key).first()
+    click = db.query(Click).filter(Click.click_id == conversion_data.click_id).first()
     db.close()
     if not click:
+        logs.error("Click not found")
         return JSONResponse(
             content={
                 "success": False, 
@@ -136,46 +180,58 @@ async def send_conversion(conversion_data: ConversionData, request: Request):
             status_code=404
             )
     
-    conversion_params = collector.collect_conversion_parameters(conversion_data, click)
-    if not conversion_params:
+    logs.info(f"Sending conversion to {click.click_source}")
+    if click.click_source == "facebook":
+        conversion_result = handle_fb_conversion(conversion_data, click)
+        return conversion_result
+        
+    elif click.click_source == "google":
+        conversion_params = collector.collect_google_conversion_parameters(
+            conversion_data, click
+        )
+        if not conversion_params:
+            logs.error("Conversion event not found")
+            return JSONResponse(
+                content={
+                    "success": False, 
+                    "msg": "Conversion event not found"
+                    }, 
+                status_code=404
+                )
+        
+        conversion_result = sender.send_conversion_to_google(conversion_params)
+    elif click.click_source == "tiktok":
+        conversion_params = collector.collect_tiktok_conversion_parameters(
+            conversion_data, click
+        )
+        if not conversion_params:
+            logs.error("Conversion event not found")
+            return JSONResponse(
+                content={
+                    "success": False, 
+                    "msg": "Conversion event not found"
+                    }, 
+                status_code=404
+                )
+        
+        conversion_result = sender.send_conversion_to_tiktok(conversion_params)
+    else:
+        logs.error("Click source not supported")
         return JSONResponse(
             content={
                 "success": False, 
-                "msg": "Conversion event not found"
+                "msg": "Click source not supported"
                 }, 
             status_code=404
             )
     
-    conversion_result = sender.send_conversion_to_fb(conversion_params)
-    
-    # conversion_dict['conversion_url'] = conversion_result.get('url')
-    # if conversion_result['success']:
-    #     conversion_dict['is_sent'] = True
-    # else:
-    #     conversion_dict['is_sent'] = False
-    
-    # if not conversion_dict.get('initiator'):
-    #     logs.info(
-    #         f"Initiator not found. Using client IP: {request.headers.get('X-Real-IP')}"
-    #     )
-    #     conversion_dict["initiator"] = request.headers.get("X-Real-IP")
-
-    # if not conversion_dict.get('conversion_source'):
-    #     logs.info("Conversion source not found. Trying to detect from parameters.")
-    #     if conversion_dict.get('fbclid'):
-    #         conversion_dict['conversion_source'] = 'facebook'
-    #     elif conversion_dict.get('gclid'):
-    #         conversion_dict['conversion_source'] = 'google'
-    #     elif conversion_dict.get('ttclid'):
-    #         conversion_dict['conversion_source'] = 'tiktok'
-    
-    conversion_dict = collector.collect_conversion_fields(
-        conversion_data, click, conversion_result
-    )
-    if conversion_dict:
-        save_conversion_to_db(conversion_dict)
-    
     if conversion_result['success']:
+        conversion_dict = collector.collect_conversion_fields(
+            conversion_data, click, conversion_result
+        )
+        if conversion_dict:
+            save_conversion_to_db(conversion_dict)
+        
         return JSONResponse(
             content={
                 "success": True, 

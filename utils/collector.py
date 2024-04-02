@@ -1,75 +1,92 @@
 from hashlib import sha256
 from datetime import datetime
 
+from fastapi import Request
 import pytz
 
+from dataclass import ClickData, ConversionData
+from models import Click
 from utils import logger
 
 
 logs = logger.get_logger(__name__)
 
 
-def collect_click_parameters(click_data, request):
-    click_dict = click_data.model_dump()
-
-    if not click_dict.get("initiator"):
+def collect_click_parameters(click_data: ClickData, request: Request):
+    if not click_data.initiator:
         logs.info(
             f"Initiator not found. Using client IP: {request.headers.get('X-Real-IP')}"
         )
-        click_dict["initiator"] = request.headers.get("X-Real-IP")
+        click_data.initiator = request.headers.get("X-Real-IP")
 
-    if not click_dict.get("click_source"):
+    if not click_data.click_source:
         logs.info("Click source not found. Trying to detect from parameters.")
-        if click_dict.get("fbclid"):
-            click_dict["click_source"] = "facebook"
-        elif click_dict.get("gclid"):
-            click_dict["click_source"] = "google"
-        elif click_dict.get("ttclid"):
-            click_dict["click_source"] = "tiktok"
+        if click_data.fbclid:
+            click_data.click_source = "facebook"
+        elif click_data.gclid:
+            click_data.click_source = "google"
+        elif click_data.ttclid:
+            click_data.click_source = "tiktok"
         else:
-            click_dict["click_source"] = "unknown"
+            click_data.click_source = "unknown"
 
-    if click_dict["click_source"] == "facebook":
-        click_dict["key"] = sha256(click_dict["fbclid"].encode()).hexdigest()
-    elif click_dict["click_source"] == "google":
-        click_dict["key"] = sha256(click_dict["gclid"].encode()).hexdigest()
-    elif click_dict["click_source"] == "tiktok":
-        click_dict["key"] = sha256(click_dict["ttclid"].encode()).hexdigest()
-    else:
-        click_dict["key"] = sha256(click_dict["click_id"].encode()).hexdigest()
+    if not click_data.key:
+        logs.info("Key not found. Generating key.")
+        if click_data.click_source == "facebook":
+            click_data.key = sha256(click_data.fbclid.encode()).hexdigest()
+        elif click_data.click_source == "google":
+            click_data.key = sha256(click_data.gclid.encode()).hexdigest()
+        elif click_data.click_source == "tiktok":
+            click_data.key = sha256(click_data.ttclid.encode()).hexdigest()
+        else:
+            click_data.key = sha256(click_data.click_id.encode()).hexdigest()
+    
+    click_dict = click_data.model_dump()
     
     logs.info(f"Click parameters generated: {click_dict}")
     
     return click_dict
 
 
-def collect_conversion_parameters(conversion_data, click):
+def collect_fb_conversion_parameters(conversion_data: ConversionData, click: Click):
     logs.info("Received conversion data. Generating conversion parameters.")
     
     conversion_params = {
-        'AddToCart': {
-            'ev': 'AddToCart',
-            'xn': '3',
+        "install": {
+            "ev": "Lead",
+            "xn": "3",
         },
-        'ViewContent': {
-            'ev': 'ViewContent',
-            'xn': '3',
+        "AddToCart": {
+            "ev": "AddToCart",
+            "xn": "3",
         },
-        'install': {
-            'ev': 'Lead',
-            'xn': '3',
+        "ViewContent": {
+            "ev": "ViewContent",
+            "xn": "3",
         },
-        'InitiateCheckout': {
-            'ev': 'InitiateCheckout',
-            'xn': '4',
+        "reg": {
+            "ev": "CompleteRegistration",
+            "xn": "4",
         },
-        'reg': {
-            'ev': 'CompleteRegistration',
-            'xn': '4',
+        "AddPaymentInfo": {
+            "ev": "AddPaymentInfo",
+            "xn": "4",
         },
-        'dep': {
-            'ev': 'Purchase',
-            'xn': '5',
+        "InitiateCheckout": {
+            "ev": "InitiateCheckout",
+            "xn": "4",
+        },
+        "dep": {
+            "ev": "Purchase",
+            "xn": "5",
+        },
+        "Subscribe": {
+            "ev": "Subscribe",
+            "xn": "5",
+        },
+        "StartTrial": {
+            "ev": "StartTrial",
+            "xn": "5",
         },
     }
     event_params = conversion_params.get(conversion_data.event)
@@ -119,7 +136,42 @@ def collect_conversion_parameters(conversion_data, click):
     
     return conversion_params
 
-def collect_conversion_fields(conversion_data, click, conversion_result):
+def collect_google_conversion_parameters(conversion_data: ConversionData, click: Click):
+    logs.info("Received conversion data. Generating conversion parameters.")
+    
+    conversion_params = {
+        "params": {
+            "event": conversion_data.event,
+            # "conversion_hash": click.key,
+            "clid": click.click_id,
+            "xcn": click.xcn,
+            "clabel": conversion_data.clabel,
+            "gtag": conversion_data.gtag,
+        },
+        "timeout": conversion_data.timeout,
+        "url": click.domain + "/conversion",
+        "user_agent": click.user_agent,
+    }
+    
+    logs.info(f"Conversion parameters generated: {conversion_params}")
+    
+    return conversion_params
+
+def collect_tiktok_conversion_parameters(conversion_data, click):
+    logs.info("Received conversion data. Generating conversion parameters.")
+    
+    conversion_params = {
+        "params": {"limit": 10, "page": 1},
+        "timeout": 1,
+        "url": "https://example.com/",
+        "user_agent": click.initiator,
+    }
+    
+    logs.info(f"Conversion parameters generated: {conversion_params}")
+    
+    return conversion_params
+
+def collect_conversion_fields(conversion_data: ConversionData, click: Click, conversion_result: dict):
     logs.info("Received conversion data. Generating conversion fields.")
     
     try:
@@ -134,6 +186,8 @@ def collect_conversion_fields(conversion_data, click, conversion_result):
             "gclid": click.gclid,
             "ttclid": click.ttclid,
             "appclid": conversion_data.appclid,
+            "clabel": conversion_data.clabel,
+            "gtag": conversion_data.gtag,
             "initiator": click.initiator,
             "conversion_source": click.click_source,
             "conversion_url": conversion_result.get("url"),
